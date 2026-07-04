@@ -8,6 +8,10 @@ Built with **LangGraph**, **LangChain**, **Hugging Face**, **Tavily**, and **Str
 
 ---
 
+![ResearchMind dashboard](assets/ResearchMind.png)
+
+---
+
 ## ✨ Features
 
 - 🔍 **Search Agent** — pulls recent, relevant sources from the live web via Tavily
