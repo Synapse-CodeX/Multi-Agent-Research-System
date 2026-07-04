@@ -1,6 +1,6 @@
 import streamlit as st
 import time
-from agents import build_reader_agent, build_search_agent, writer_chain, critic_chain
+from graph import research_graph
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -312,9 +312,9 @@ def step_card(num: str, title: str, state: str, desc: str = ""):
 
 
 # ── Session state init ────────────────────────────────────────────────────────
-for key in ("results", "running", "done"):
+for key in ("results", "running", "done", "error"):
     if key not in st.session_state:
-        st.session_state[key] = {} if key == "results" else False
+        st.session_state[key] = {} if key == "results" else (None if key == "error" else False)
 
 
 # ── Hero ──────────────────────────────────────────────────────────────────────
@@ -395,6 +395,16 @@ with col_pipeline:
 
 
 # ── Run pipeline ──────────────────────────────────────────────────────────────
+# Maps the graph's node names (as returned by research_graph.stream()) to the
+# keys the rest of the UI expects, and to a friendly status message.
+NODE_TO_KEY = {"search": "search", "reader": "reader", "writer": "writer", "critic": "critic"}
+STATUS_MESSAGES = {
+    "search": "🔍  Search Agent is working…",
+    "reader": "📄  Reader Agent is scraping top resources…",
+    "writer": "✍️  Writer is drafting the report…",
+    "critic": "🧐  Critic is reviewing the report…",
+}
+
 if run_btn:
     if not topic.strip():
         st.warning("Please enter a research topic first.")
@@ -402,57 +412,41 @@ if run_btn:
         st.session_state.results = {}
         st.session_state.running = True
         st.session_state.done = False
+        st.session_state.error = None
         st.rerun()
 
 if st.session_state.running and not st.session_state.done:
-    results = {}
     topic_val = st.session_state.topic_input
+    results = {}
+    status_placeholder = st.empty()
 
-    # ── Step 1: Search ──
-    with st.spinner("🔍  Search Agent is working…"):
-        search_agent = build_search_agent()
-        sr = search_agent.invoke({
-            "messages": [("user", f"Find recent, reliable and detailed information about: {topic_val}")]
-        })
-        results["search"] = sr["messages"][-1].content
-        st.session_state.results = dict(results)
-    st.rerun() if False else None   # keep inline for now
+    try:
+        # research_graph.stream() yields one chunk per completed node, in
+        # order: {"search": {...}}, then {"reader": {...}}, etc. This is
+        # what lets us show live per-step status instead of one long spinner.
+        for step_output in research_graph.stream({"topic": topic_val}):
+            for node_name, node_result in step_output.items():
+                status_placeholder.info(STATUS_MESSAGES.get(node_name, f"Running {node_name}…"))
+                key = NODE_TO_KEY.get(node_name, node_name)
+                results[key] = node_result.get(
+                    "search_results" if node_name == "search" else
+                    "scraped_content" if node_name == "reader" else
+                    "report" if node_name == "writer" else
+                    "feedback",
+                    "",
+                )
+                st.session_state.results = dict(results)
 
-    # ── Step 2: Reader ──
-    with st.spinner("📄  Reader Agent is scraping top resources…"):
-        reader_agent = build_reader_agent()
-        rr = reader_agent.invoke({
-            "messages": [("user",
-                f"Based on the following search results about '{topic_val}', "
-                f"pick the most relevant URL and scrape it for deeper content.\n\n"
-                f"Search Results:\n{results['search'][:800]}"
-            )]
-        })
-        results["reader"] = rr["messages"][-1].content
-        st.session_state.results = dict(results)
+        status_placeholder.empty()
+        st.session_state.running = False
+        st.session_state.done = True
+        st.rerun()
 
-    # ── Step 3: Writer ──
-    with st.spinner("✍️  Writer is drafting the report…"):
-        research_combined = (
-            f"SEARCH RESULTS:\n{results['search']}\n\n"
-            f"DETAILED SCRAPED CONTENT:\n{results['reader']}"
-        )
-        results["writer"] = writer_chain.invoke({
-            "topic": topic_val,
-            "research": research_combined
-        })
-        st.session_state.results = dict(results)
-
-    # ── Step 4: Critic ──
-    with st.spinner("🧐  Critic is reviewing the report…"):
-        results["critic"] = critic_chain.invoke({
-            "report": results["writer"]
-        })
-        st.session_state.results = dict(results)
-
-    st.session_state.running = False
-    st.session_state.done = True
-    st.rerun()
+    except Exception as e:
+        status_placeholder.empty()
+        st.session_state.running = False
+        st.session_state.error = str(e)
+        st.error(f"Pipeline failed: {e}")
 
 
 # ── Results display ───────────────────────────────────────────────────────────
